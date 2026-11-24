@@ -6,11 +6,13 @@
 #   /mnt/mmc/Roms/APPS/RGDS-Agents.sh               ← 前端菜单入口
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/main.lua
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/conf.lua
-#   /mnt/mmc/Roms/APPS/RGDS-Agents/subscreen.lua     ← 第二块屏上的信息面板窗口
+#   /mnt/mmc/Roms/APPS/RGDS-Agents/screens.lua
+#   /mnt/mmc/Roms/APPS/RGDS-Agents/screen-launch.sh
+#   /mnt/mmc/Roms/APPS/RGDS-Agents/subscreen.lua
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/evdev.lua         ← 下屏触摸（event1），Weston 不把点按派给 SDL
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/micwave.lua       ← 麦克风波形/电平/按键录音（主线程）
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/micthread.lua     ← 录音线程（OpenAL → 共享环形缓冲）
-#   /mnt/mmc/Roms/APPS/RGDS-Agents/alsoft.conf       ← OpenAL 私有配置：录音走 dsnoop（启动脚本 export ALSOFT_CONF）
+#   /mnt/mmc/Roms/APPS/RGDS-Agents/alsoft.conf       ← OpenAL 私有配置：录音走 dsnoop（只传给 love，不传给菜单）
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/stt.lua          ← 常驻 SenseVoice 助手（游戏启动/退出时拉起和关掉）
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/sttthread.lua
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/aid.lua          ← MiniMax 对话（游戏启动/退出时拉起和关掉 rgds-aid）
@@ -18,7 +20,7 @@
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/rgds-aid.py      ← 本机 sidecar，密钥在设备 config 里，不进仓库
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/stt/             ← sv-helper、两个 sherpa .so、model.int8.onnx、tokens.txt
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/fonts/          ← 思源黑体，信息面板和主屏字幕用
-#   /mnt/mmc/Roms/APPS/RGDS-Agents/run-via-menu.sh  ← SSH 按菜单流程启动
+#   /mnt/mmc/Roms/APPS/RGDS-Agents/run-via-menu.sh
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/bin/love         ← LÖVE 11.5 aarch64
 #   /mnt/mmc/Roms/APPS/RGDS-Agents/lib/*.so         ← 系统缺失的 3 个 so
 #   /mnt/mmc/Roms/APPS/Imgs/RGDS-Agents.png         ← 菜单图标
@@ -35,8 +37,8 @@ SCRIPT="$APPS/$NAME.sh"
 echo ">> 目标: $TARGET"
 echo ">> 复制应用代码"
 ssh "$TARGET" "mkdir -p '$GAME/bin' '$GAME/lib' '$APPS/Imgs'"
-scp -q main.lua conf.lua subscreen.lua evdev.lua touchpoll.lua touchthread.lua micwave.lua micthread.lua stt.lua sttthread.lua aid.lua aidthread.lua rgds-aid.py alsoft.conf run-via-menu.sh "$TARGET:$GAME/"
-ssh "$TARGET" "chmod +x '$GAME/run-via-menu.sh'"
+scp -q main.lua conf.lua subscreen.lua screens.lua screen-launch.sh evdev.lua touchpoll.lua touchthread.lua micwave.lua micthread.lua stt.lua sttthread.lua aid.lua aidthread.lua rgds-aid.py alsoft.conf run-via-menu.sh "$TARGET:$GAME/"
+ssh "$TARGET" "chmod +x '$GAME/run-via-menu.sh' '$GAME/screen-launch.sh'"
 
 if [ -f fonts/SourceHanSansCN-Regular.otf ]; then
   echo ">> 复制中日文字体"
@@ -87,14 +89,16 @@ cat > "$LAUNCHER_TMP" <<'LAUNCHER'
 # RGDS-Agents 启动器（由前端菜单调用，stdout 被丢弃，故另存日志）
 SHDIR="$(cd "$(dirname "$0")" && pwd)"
 export HOME=/root
-export LD_LIBRARY_PATH="$SHDIR/RGDS-Agents/lib:$LD_LIBRARY_PATH"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run}"
-export SDL_VIDEO_DOUBLE_BUFFER=1
 export RGDS_LOG=/tmp/RGDS-Agents.log
-export ALSOFT_CONF="$SHDIR/RGDS-Agents/alsoft.conf"
-cd "$SHDIR/RGDS-Agents" || exit 1
-"$SHDIR/RGDS-Agents/bin/love" . "$@" > "$RGDS_LOG" 2>&1
+"$SHDIR/RGDS-Agents/screen-launch.sh" run -- \
+    env \
+    LD_LIBRARY_PATH="$SHDIR/RGDS-Agents/lib:$LD_LIBRARY_PATH" \
+    ALSOFT_CONF="$SHDIR/RGDS-Agents/alsoft.conf" \
+    SDL_VIDEO_DOUBLE_BUFFER=1 \
+    "$SHDIR/RGDS-Agents/bin/love" "$SHDIR/RGDS-Agents" "$@" \
+    > "$RGDS_LOG" 2>&1
 LAUNCHER
 scp -q "$LAUNCHER_TMP" "$TARGET:$SCRIPT"
 rm -f "$LAUNCHER_TMP"
@@ -109,5 +113,6 @@ echo ">> 校验"
 ssh "$TARGET" "ls -l '$SCRIPT'; echo; ls -lR '$GAME' | head -20; echo; df -h /mnt/mmc | tail -1"
 
 echo ">> 完成。从掌机菜单 APPS 里运行 $NAME.sh"
-echo "   SSH 按菜单流程启动（前端需在菜单界面）: ssh $TARGET '$GAME/run-via-menu.sh'"
-echo "   不要直接 ssh 执行 $SCRIPT：菜单仍占着音频和手柄，app 会无声且按键被菜单同时响应"
+echo "   SSH 在菜单保持运行时后台启动: ssh $TARGET '$GAME/run-via-menu.sh'"
+echo "   要重新启动，先 SIGTERM 掉 love 进程，等 muos2.bin 在运行后再执行。日志 /tmp/RGDS-Agents.log"
+echo "   ALSA 和 event3 仍由菜单持有。"

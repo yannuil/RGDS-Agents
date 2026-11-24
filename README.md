@@ -28,9 +28,11 @@ Launch it from the device APPS menu. With the menu already up (`muos2.bin` runni
 ssh rgds /mnt/mmc/Roms/APPS/RGDS-Agents/run-via-menu.sh
 ```
 
-That script sends `SIGINT` to `muos2.bin`. The menu exits 0, `dmenu_ln` runs `/tmp/.next`, and the menu releases ALSA and the gamepad. `SIGKILL` on `muos2.bin` skips `/tmp/.next`.
+`run-via-menu.sh` leaves `muos2.bin` running, so the top panel stays the menu. This app's only window is the bottom panel. The script refuses to start when the menu is not running.
 
-To relaunch while the game is in front, `SIGTERM` its `love` process and wait until `muos2.bin` is back, then run the script again. The script refuses to start when the menu is not running. The game log is `/tmp/RGDS-Agents.log`.
+Choosing the app in the APPS menu exits `muos2.bin` before this launcher runs. The launcher starts `muos2.bin` again and runs love on the bottom panel. ALSA and `event3` stay with the menu.
+
+To relaunch, `SIGTERM` the `love` process and run the script again once `muos2.bin` is running. The game log is `/tmp/RGDS-Agents.log`.
 
 ## API key
 

@@ -69,6 +69,10 @@ function M.isLive()
     return M.state == "live"
 end
 
+function M.isRecording()
+    return M.recording
+end
+
 -- 片段从按下前 0.25 s 开始（线程那边截取），结果在 update 里经 M.onClip 回调交给调用方
 function M.beginClip()
     if not thread or M.recording then return false end
