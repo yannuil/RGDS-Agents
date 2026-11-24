@@ -2,8 +2,6 @@
 -- 移植自 rg34xx-lua-app：分辨率 720x480 -> 640x480，按键表换成 RK3568 拓扑，
 -- 新增触摸显示、网络探测，以及 --selftest / --inputlog 两个验证模式。
 -- fixed 版：网络探测改为 love.thread 后台执行不卡帧；自检如实报告音频是否真的拿到播放设备。
--- v2：标题/分数/RUNTIME/LAST INPUT 信息面板移到第二块屏（见 subscreen.lua），主屏只剩游戏；
---     开不了第二个窗口时退回原来的单屏布局。
 --     信息面板加麦克风实时波形与电平（micwave.lua / micthread.lua，经 dsnoop 共享录音）；
 --     按住 R1（键盘 t）录一段语音，录音期间暂停 BGM。松开后把这段已经录好的音频
 --     交给常驻的 sv-helper（stt.lua）做离线识别，信息面板留下文字和语言，
@@ -11,7 +9,6 @@
 --     回复留在信息面板，长回复在这块屏上换行，十字键上下滚动；流式输出时跟着最新一行。
 --     主屏只留开头一两行，大约 5 秒。语音识别保持离线。
 --     助手、密钥或网络挂了，游戏照常跑，信息面板写明原因。
---     gt9xx-0 的触摸在信息屏上。手指按下时在这块屏上画十字，并在日志里写一行。手柄保留。
 
 local W, H = 640, 480
 local windowW, windowH = W, H
@@ -70,7 +67,9 @@ local function color(name, alpha)
 end
 
 local subscreen = require("subscreen")
+local screens = require("screens")
 local hud = {external = false, error = nil}
+local screenPlan
 
 -- 游玩区（草地区域）边界；信息面板在第二块屏时草地占满主屏
 local SHARED_FIELD_TOP = 214
@@ -452,18 +451,41 @@ function installTouchWatch()
 end
 
 function love.load()
+    local oneScreen = false
+    for _, value in ipairs(arg or {}) do
+        if value == "--selftest" then selftest = true end
+        if value == "--inputlog" then inputlog = true end
+        if value == "--shot" then shotRequested = true end
+        if value == "--one-screen" then
+            oneScreen = true
+            hud.error = "disabled by --one-screen"
+        end
+    end
+
+    if not oneScreen then
+        local ok, planned = pcall(function()
+            return screens.plan(love.window.getDisplayCount())
+        end)
+        if not ok then planned = screens.plan(1) end
+        screenPlan = planned
+        if screenPlan.loveDisplay ~= 1 then
+            love.window.setMode(W, H, {
+                fullscreen = true,
+                fullscreentype = "desktop",
+                borderless = true,
+                resizable = false,
+                vsync = 1,
+                highdpi = false,
+                display = screenPlan.loveDisplay,
+            })
+        end
+    end
+
     love.graphics.setDefaultFilter("nearest", "nearest")
     for _, size in ipairs({8, 9, 10, 11, 12, 14, 16, 20, 22, 28}) do
         fonts[size] = love.graphics.newFont(size)
     end
     fonts.cjk = loadCjkFont(16)
-
-    for _, value in ipairs(arg or {}) do
-        if value == "--selftest" then selftest = true end
-        if value == "--inputlog" then inputlog = true end
-        if value == "--shot" then shotRequested = true end
-        if value == "--one-screen" then hud.error = "disabled by --one-screen" end
-    end
 
     love.math.setRandomSeed(os.time())
     initAudio()
@@ -479,17 +501,21 @@ function love.load()
     aid.start()
     windowW, windowH = love.graphics.getWidth(), love.graphics.getHeight()
 
-    if not hud.error and not love.window.isVisible() then hud.error = "main window hidden" end
-    if not hud.error then
-        local ok, err = subscreen.open(W, H)
-        hud.external, hud.error = ok, err
-    end
-    if hud.external then
-        setFieldTop(0)
-        print(string.format("subscreen: info pane on display %d (main window on display %d)",
-            subscreen.display, subscreen.mainDisplay))
+    if screenPlan and not screenPlan.openSecondWindow then
+        print("subscreen: off (SDL display 0 reserved for the OS menu), info pane stays on this window")
     else
-        print("subscreen: off (" .. tostring(hud.error) .. "), info pane stays on the main screen")
+        if not hud.error and not love.window.isVisible() then hud.error = "main window hidden" end
+        if not hud.error then
+            local ok, err = subscreen.open(W, H)
+            hud.external, hud.error = ok, err
+        end
+        if hud.external then
+            setFieldTop(0)
+            print(string.format("subscreen: info pane on display %d (main window on display %d)",
+                subscreen.display, subscreen.mainDisplay))
+        else
+            print("subscreen: off (" .. tostring(hud.error) .. "), info pane stays on the main screen")
+        end
     end
     io.stdout:flush()
 
@@ -501,8 +527,11 @@ function love.load()
         renderer = tostring(renderer) .. " " .. tostring(version),
         gpu = tostring(vendor) .. " / " .. tostring(device),
         input = #joysticks > 0 and ("Pad: " .. tostring(joysticks[1]:getName())) or "Keyboard only",
-        output = hud.external and string.format("%d x %d + info on display %d", windowW, windowH, subscreen.display)
-            or string.format("%d x %d", windowW, windowH),
+        output = (screenPlan and screenPlan.menuSdl ~= nil)
+            and string.format("%d x %d on display %d, OS menu on display %d",
+                windowW, windowH, screenPlan.agentsSdl, screenPlan.menuSdl)
+            or (hud.external and string.format("%d x %d + info on display %d", windowW, windowH, subscreen.display)
+                or string.format("%d x %d", windowW, windowH)),
         lua = _VERSION .. " / LÖVE " .. string.format("%d.%d.%d", major, minor, revision)
     }
 
@@ -575,7 +604,8 @@ local function layoutChat()
     if not font then return end
     love.graphics.setFont(font)
     local lh = font:getHeight()
-    chatView = math.max(1, math.floor((CHAT_H - 20) / lh))
+    local boxH = aid.setup and (CHAT_H - 18) or CHAT_H
+    chatView = math.max(1, math.floor((boxH - 20) / lh))
     local function pushWrapped(tag, body, textColor, textAlpha)
         if body == nil or body == "" then return end
         local tagW = font:getWidth(tag)
@@ -597,12 +627,17 @@ local function layoutChat()
             chatLines[#chatLines + 1] = {text = "", gap = true, color = "cream", alpha = 0}
         end
         if turn.who == "you" then
-            local tag = (turn.lang and turn.lang ~= "" and turn.lang or "YOU") .. "  "
+            local tag = aid.youTag(turn) .. "  "
             pushWrapped(tag, turn.text, "cream", 0.62)
         else
             local body = turn.text
             if body == "" and turn.live then body = fonts.cjk and "…" or "..." end
             pushWrapped("AI  ", body, "cream", 1)
+            local toolLine = aid.toolText(turn.tool)
+            if toolLine then
+                local alpha = turn.tool.status == "running" and 1 or 0.62
+                pushWrapped("    ", toolLine, "gold", alpha)
+            end
             if turn.err and turn.err ~= "" then
                 pushWrapped("    ", turn.err, "pink", 1)
             end
@@ -964,6 +999,25 @@ local function drawInputPanel()
     love.graphics.print(net.state .. " · " .. net.detail, 500, 190)
 end
 
+local function drawSetupPanel()
+    drawRoundedBox(12, 156, 616, 50, 12, "ink", 0.9)
+    color("gold")
+    love.graphics.setFont(fonts[10])
+    love.graphics.print("SETUP", 24, 163)
+    color("cream")
+    love.graphics.setFont(fonts[20])
+    love.graphics.print(aid.setup.token, 84, 168)
+    color("mint", 0.9)
+    local urlFont = fonts[12]
+    love.graphics.setFont(urlFont)
+    local _, urlLines = urlFont:getWrap(aid.setup.url, 420)
+    love.graphics.print(urlLines[1] or "", 176, 176)
+end
+
+local function drawInputOrSetup()
+    if aid.setup then drawSetupPanel() else drawInputPanel() end
+end
+
 local function drawGame()
     color("grass")
     love.graphics.rectangle("fill", 0, FIELD_TOP, W, H - FIELD_TOP)
@@ -1183,13 +1237,17 @@ local function printWrapped(font, text, x, y, limit, maxLines)
 end
 
 local function drawAidBody(x, y, w)
+    local tool = aid.toolText(aid.activity)
     if aid.phase == "thinking" then
-        color("gold")
-        love.graphics.setFont(fonts.cjk or fonts[16])
-        love.graphics.print(fonts.cjk and "…" or "...", x + 28, y)
         color("gold")
         love.graphics.setFont(fonts[11])
         love.graphics.print("AI", x, y + 2)
+        if tool then
+            printWrapped(fonts[11], tool, x + 28, y + 2, w - 28, 1)
+        else
+            love.graphics.setFont(fonts.cjk or fonts[16])
+            love.graphics.print(fonts.cjk and "…" or "...", x + 28, y)
+        end
     elseif aid.phase == "error" then
         color("pink")
         love.graphics.setFont(fonts[11])
@@ -1198,12 +1256,19 @@ local function drawAidBody(x, y, w)
             color("cream", 0.85)
             printWrapped(fonts.cjk or fonts[14], aid.reply, x, y + 16, w, 2)
         end
-    elseif aid.reply ~= "" then
+    elseif tool or aid.reply ~= "" then
         color("gold")
         love.graphics.setFont(fonts[11])
         love.graphics.print("AI", x, y + 2)
-        color("cream")
-        printWrapped(fonts.cjk or fonts[14], aid.reply, x + 28, y, w - 28, 2)
+        local textY = y
+        if tool then
+            printWrapped(fonts[11], tool, x + 28, y + 2, w - 28, 1)
+            textY = y + 16
+        end
+        if aid.reply ~= "" then
+            color("cream")
+            printWrapped(fonts.cjk or fonts[14], aid.reply, x + 28, textY, w - 28, tool and 1 or 2)
+        end
     end
 end
 
@@ -1262,7 +1327,6 @@ function drawSttLine(x, y, w, h, rec, showAi)
     love.graphics.print("hold R1 (or t) to record a clip", x, y + 12)
 end
 
--- 主屏（DSI-1）顶部一两行，约 5 秒后消失。不挡整块草地。
 local function drawSttBanner()
     local text, tag
     if aid.bannerActive() then
@@ -1299,6 +1363,19 @@ local function drawChatLog()
     local lh = font:getHeight()
     local innerX, innerY = x + 10, y + 10
     local innerW, innerH = w - 20, h - 20
+    if aid.setup then
+        color("gold")
+        love.graphics.setFont(fonts[12])
+        love.graphics.print(aid.setup.token, innerX, innerY)
+        color("cream", 0.9)
+        local urlFont = fonts[11]
+        love.graphics.setFont(urlFont)
+        local room = math.max(20, innerW - fonts[12]:getWidth(aid.setup.token) - 16)
+        local _, urlLines = urlFont:getWrap(aid.setup.url, room)
+        love.graphics.print(urlLines[1] or "", innerX + fonts[12]:getWidth(aid.setup.token) + 12, innerY + 1)
+        innerY = innerY + 18
+        innerH = innerH - 18
+    end
     love.graphics.push("all")
     love.graphics.setScissor(innerX, innerY, innerW - 8, innerH)
     love.graphics.setFont(font)
@@ -1359,7 +1436,7 @@ local function drawInfoScreen()
         drawMicStrip()
     else
         drawRuntimePanel()
-        drawInputPanel()
+        drawInputOrSetup()
         drawStatusPanel()
         drawMicPanel()
     end
@@ -1414,7 +1491,7 @@ function love.draw()
 
     if not hud.external then
         drawRuntimePanel()
-        drawInputPanel()
+        drawInputOrSetup()
     end
 
     drawSttBanner()
@@ -1479,7 +1556,8 @@ function drawSelftest()
     add("stt", stt.phase .. (stt.detail ~= "" and (" (" .. stt.detail .. ")") or ""))
     add("aid", aid.phase .. (aid.detail ~= "" and (" (" .. aid.detail .. ")") or ""))
     add("subscreen", hud.external and string.format("info pane on display %d, %d frames", subscreen.display, subscreen.frames)
-        or ("off: " .. tostring(hud.error)))
+        or (screenPlan and screenPlan.menuSdl ~= nil and "off (SDL display 0 reserved for the OS menu)"
+            or ("off: " .. tostring(hud.error))))
     add("mem KB", string.format("%.0f", collectgarbage("count")))
 
     local report = table.concat(lines, "\n") .. "\n"
