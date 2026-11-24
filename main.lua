@@ -575,7 +575,8 @@ local function layoutChat()
     if not font then return end
     love.graphics.setFont(font)
     local lh = font:getHeight()
-    chatView = math.max(1, math.floor((CHAT_H - 20) / lh))
+    local boxH = aid.setup and (CHAT_H - 18) or CHAT_H
+    chatView = math.max(1, math.floor((boxH - 20) / lh))
     local function pushWrapped(tag, body, textColor, textAlpha)
         if body == nil or body == "" then return end
         local tagW = font:getWidth(tag)
@@ -597,12 +598,17 @@ local function layoutChat()
             chatLines[#chatLines + 1] = {text = "", gap = true, color = "cream", alpha = 0}
         end
         if turn.who == "you" then
-            local tag = (turn.lang and turn.lang ~= "" and turn.lang or "YOU") .. "  "
+            local tag = aid.youTag(turn) .. "  "
             pushWrapped(tag, turn.text, "cream", 0.62)
         else
             local body = turn.text
             if body == "" and turn.live then body = fonts.cjk and "…" or "..." end
             pushWrapped("AI  ", body, "cream", 1)
+            local toolLine = aid.toolText(turn.tool)
+            if toolLine then
+                local alpha = turn.tool.status == "running" and 1 or 0.62
+                pushWrapped("    ", toolLine, "gold", alpha)
+            end
             if turn.err and turn.err ~= "" then
                 pushWrapped("    ", turn.err, "pink", 1)
             end
@@ -964,6 +970,25 @@ local function drawInputPanel()
     love.graphics.print(net.state .. " · " .. net.detail, 500, 190)
 end
 
+local function drawSetupPanel()
+    drawRoundedBox(12, 156, 616, 50, 12, "ink", 0.9)
+    color("gold")
+    love.graphics.setFont(fonts[10])
+    love.graphics.print("SETUP", 24, 163)
+    color("cream")
+    love.graphics.setFont(fonts[20])
+    love.graphics.print(aid.setup.token, 84, 168)
+    color("mint", 0.9)
+    local urlFont = fonts[12]
+    love.graphics.setFont(urlFont)
+    local _, urlLines = urlFont:getWrap(aid.setup.url, 420)
+    love.graphics.print(urlLines[1] or "", 176, 176)
+end
+
+local function drawInputOrSetup()
+    if aid.setup then drawSetupPanel() else drawInputPanel() end
+end
+
 local function drawGame()
     color("grass")
     love.graphics.rectangle("fill", 0, FIELD_TOP, W, H - FIELD_TOP)
@@ -1183,13 +1208,17 @@ local function printWrapped(font, text, x, y, limit, maxLines)
 end
 
 local function drawAidBody(x, y, w)
+    local tool = aid.toolText(aid.activity)
     if aid.phase == "thinking" then
-        color("gold")
-        love.graphics.setFont(fonts.cjk or fonts[16])
-        love.graphics.print(fonts.cjk and "…" or "...", x + 28, y)
         color("gold")
         love.graphics.setFont(fonts[11])
         love.graphics.print("AI", x, y + 2)
+        if tool then
+            printWrapped(fonts[11], tool, x + 28, y + 2, w - 28, 1)
+        else
+            love.graphics.setFont(fonts.cjk or fonts[16])
+            love.graphics.print(fonts.cjk and "…" or "...", x + 28, y)
+        end
     elseif aid.phase == "error" then
         color("pink")
         love.graphics.setFont(fonts[11])
@@ -1198,12 +1227,19 @@ local function drawAidBody(x, y, w)
             color("cream", 0.85)
             printWrapped(fonts.cjk or fonts[14], aid.reply, x, y + 16, w, 2)
         end
-    elseif aid.reply ~= "" then
+    elseif tool or aid.reply ~= "" then
         color("gold")
         love.graphics.setFont(fonts[11])
         love.graphics.print("AI", x, y + 2)
-        color("cream")
-        printWrapped(fonts.cjk or fonts[14], aid.reply, x + 28, y, w - 28, 2)
+        local textY = y
+        if tool then
+            printWrapped(fonts[11], tool, x + 28, y + 2, w - 28, 1)
+            textY = y + 16
+        end
+        if aid.reply ~= "" then
+            color("cream")
+            printWrapped(fonts.cjk or fonts[14], aid.reply, x + 28, textY, w - 28, tool and 1 or 2)
+        end
     end
 end
 
@@ -1299,6 +1335,19 @@ local function drawChatLog()
     local lh = font:getHeight()
     local innerX, innerY = x + 10, y + 10
     local innerW, innerH = w - 20, h - 20
+    if aid.setup then
+        color("gold")
+        love.graphics.setFont(fonts[12])
+        love.graphics.print(aid.setup.token, innerX, innerY)
+        color("cream", 0.9)
+        local urlFont = fonts[11]
+        love.graphics.setFont(urlFont)
+        local room = math.max(20, innerW - fonts[12]:getWidth(aid.setup.token) - 16)
+        local _, urlLines = urlFont:getWrap(aid.setup.url, room)
+        love.graphics.print(urlLines[1] or "", innerX + fonts[12]:getWidth(aid.setup.token) + 12, innerY + 1)
+        innerY = innerY + 18
+        innerH = innerH - 18
+    end
     love.graphics.push("all")
     love.graphics.setScissor(innerX, innerY, innerW - 8, innerH)
     love.graphics.setFont(font)
@@ -1359,7 +1408,7 @@ local function drawInfoScreen()
         drawMicStrip()
     else
         drawRuntimePanel()
-        drawInputPanel()
+        drawInputOrSetup()
         drawStatusPanel()
         drawMicPanel()
     end
@@ -1414,7 +1463,7 @@ function love.draw()
 
     if not hud.external then
         drawRuntimePanel()
-        drawInputPanel()
+        drawInputOrSetup()
     end
 
     drawSttBanner()
