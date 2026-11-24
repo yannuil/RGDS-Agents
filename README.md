@@ -55,3 +55,36 @@ DeepSeek, or any other OpenAI-compatible API, is the same file with your own `ba
 ```
 
 Optional fields: `system`, `max_tokens`, `history_turns` (default 6). Chat fails closed unless `api_key`, `base_url`, and `model` are all set.
+
+## OpenCode
+
+OpenCode v2 (`opencode serve`) runs on the RGDS at `127.0.0.1:4096`. Config, local server password, and the SQLite credential database live on ext4 under `/userdata/opencode` with mode `600`.
+
+1. Download the pinned aarch64 OpenCode v2 binary on your dev machine:
+
+```sh
+./setup-opencode.sh
+```
+
+2. Deploy the binary, service scripts, and `/etc/init.d/S55opencode` to the device:
+
+```sh
+./deploy.sh root@rgds.local
+```
+
+3. Start the temporary web setup wizard on the device to write `/userdata/opencode/config/opencode/opencode.json`, restart `opencode serve`, and store your provider API key via OpenCode's `/api/credential` endpoint:
+
+```sh
+ssh -o IdentitiesOnly=yes -o IdentityFile=~/.ssh/id_ed25519 root@rgds.local \
+  /mnt/mmc/Roms/APPS/RGDS-Agents/opencode/opencode-setup-web.py
+```
+
+Open the printed LAN URL on your phone or PC, enter the 6-character pairing code, and submit your provider and API key. The wizard restarts `opencode serve`, verifies `/api/info`, stores the credential, and closes port 8787.
+
+4. Connect your PC terminal (`opencode --server`) to the device daemon over an SSH loopback tunnel:
+
+```sh
+./opencode/attach-rgds.sh
+```
+
+Pass a custom SSH target as the first argument, or set `RGDS_SSH_KEY`, `RGDS_OPENCODE_PORT`, `RGDS_OPENCODE_DATA_ROOT`, or `RGDS_LOCAL_PORT`.

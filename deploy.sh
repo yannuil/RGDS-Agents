@@ -31,36 +31,84 @@ NAME="RGDS-Agents"
 APPS="/mnt/mmc/Roms/APPS"
 GAME="$APPS/$NAME"
 SCRIPT="$APPS/$NAME.sh"
+SSH_KEY="${RGDS_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+
+rssh() {
+  if [ -f "$SSH_KEY" ]; then
+    ssh -o IdentitiesOnly=yes -i "$SSH_KEY" "$@"
+  else
+    ssh "$@"
+  fi
+}
+
+rscp() {
+  if [ -f "$SSH_KEY" ]; then
+    scp -q -o IdentitiesOnly=yes -i "$SSH_KEY" "$@"
+  else
+    scp -q "$@"
+  fi
+}
 
 echo ">> 目标: $TARGET"
 echo ">> 复制应用代码"
-ssh "$TARGET" "mkdir -p '$GAME/bin' '$GAME/lib' '$APPS/Imgs'"
-scp -q main.lua conf.lua subscreen.lua evdev.lua touchpoll.lua touchthread.lua micwave.lua micthread.lua stt.lua sttthread.lua aid.lua aidthread.lua rgds-aid.py alsoft.conf run-via-menu.sh "$TARGET:$GAME/"
-ssh "$TARGET" "chmod +x '$GAME/run-via-menu.sh'"
+rssh "$TARGET" "mkdir -p '$GAME/bin' '$GAME/lib' '$APPS/Imgs'"
+rscp main.lua conf.lua subscreen.lua evdev.lua touchpoll.lua touchthread.lua micwave.lua micthread.lua stt.lua sttthread.lua aid.lua aidthread.lua rgds-aid.py alsoft.conf run-via-menu.sh "$TARGET:$GAME/"
+rssh "$TARGET" "chmod +x '$GAME/run-via-menu.sh'"
+
+if [ -d opencode ]; then
+  echo ">> 复制 OpenCode 服务与配置脚本"
+  rssh "$TARGET" "mkdir -p '$GAME/opencode/bin'"
+  rscp opencode/opencode-service.sh opencode/opencode-setup-web.py opencode/AGENTS.md "$TARGET:$GAME/opencode/"
+  rssh "$TARGET" "chmod +x '$GAME/opencode/opencode-service.sh' '$GAME/opencode/opencode-setup-web.py'"
+  if [ -x opencode/bin/opencode ]; then
+    local_size=$(wc -c < opencode/bin/opencode | tr -d '[:space:]')
+    remote_size=$(rssh "$TARGET" "[ -f '$GAME/opencode/bin/opencode' ] && wc -c < '$GAME/opencode/bin/opencode' | tr -d '[:space:]' || echo 0")
+    if [ "$local_size" != "$remote_size" ]; then
+      echo ">> 复制 opencode 二进制"
+      rscp opencode/bin/opencode "$TARGET:$GAME/opencode/bin/opencode.new"
+      rssh "$TARGET" "chmod +x '$GAME/opencode/bin/opencode.new' && mv -f '$GAME/opencode/bin/opencode.new' '$GAME/opencode/bin/opencode'"
+    else
+      echo ">> opencode 二进制已在掌机上，跳过"
+    fi
+  fi
+  if rssh "$TARGET" "[ -d /etc/init.d ] && [ -w /etc/init.d ]"; then
+    echo ">> 安装开机自启脚本 /etc/init.d/S55opencode"
+    INIT_TMP="$(mktemp)"
+    cat > "$INIT_TMP" <<INIT_EOF
+#!/bin/sh
+SERVICE="$GAME/opencode/opencode-service.sh"
+[ -x "\$SERVICE" ] || exit 0
+exec "\$SERVICE" "\$@"
+INIT_EOF
+    rscp "$INIT_TMP" "$TARGET:/etc/init.d/S55opencode"
+    rm -f "$INIT_TMP"
+    rssh "$TARGET" "chmod +x /etc/init.d/S55opencode"
+  fi
+fi
 
 if [ -f fonts/SourceHanSansCN-Regular.otf ]; then
   echo ">> 复制中日文字体"
-  ssh "$TARGET" "mkdir -p '$GAME/fonts'"
-  scp -q fonts/SourceHanSansCN-Regular.otf "$TARGET:$GAME/fonts/"
+  rssh "$TARGET" "mkdir -p '$GAME/fonts'"
+  rscp fonts/SourceHanSansCN-Regular.otf "$TARGET:$GAME/fonts/"
 fi
 
 if [ -x stt/sv-helper ]; then
   echo ">> 复制语音识别助手和模型（模型约 229MB，大小相同则跳过）"
-  ssh "$TARGET" "mkdir -p '$GAME/stt/lib'"
-  scp -q stt/sv-helper stt/tokens.txt "$TARGET:$GAME/stt/"
-  scp -q stt/lib/libonnxruntime.so stt/lib/libsherpa-onnx-c-api.so "$TARGET:$GAME/stt/lib/"
-  ssh "$TARGET" "chmod +x '$GAME/stt/sv-helper'"
+  rssh "$TARGET" "mkdir -p '$GAME/stt/lib'"
+  rscp stt/sv-helper stt/tokens.txt "$TARGET:$GAME/stt/"
+  rscp stt/lib/libonnxruntime.so stt/lib/libsherpa-onnx-c-api.so "$TARGET:$GAME/stt/lib/"
+  rssh "$TARGET" "chmod +x '$GAME/stt/sv-helper'"
   local_size=$(wc -c < stt/model.int8.onnx)
-  remote_size=$(ssh "$TARGET" "wc -c < '$GAME/stt/model.int8.onnx' 2>/dev/null" || echo 0)
+  remote_size=$(rssh "$TARGET" "wc -c < '$GAME/stt/model.int8.onnx' 2>/dev/null" || echo 0)
   if [ "$local_size" != "$remote_size" ]; then
-    scp -q stt/model.int8.onnx "$TARGET:$GAME/stt/model.int8.onnx"
+    rscp stt/model.int8.onnx "$TARGET:$GAME/stt/model.int8.onnx"
   else
     echo ">> 模型已在掌机上，跳过"
   fi
 fi
 
 echo ">> 从掌机 /opt/love 复制运行时（若不存在则提示）"
-ssh "$TARGET" "
+rssh "$TARGET" "
 set -e
 if [ ! -x /opt/love/love-11.5 ]; then
   echo '!! /opt/love/love-11.5 不存在。先安装 LÖVE 11.5 aarch64：'
@@ -96,17 +144,17 @@ export ALSOFT_CONF="$SHDIR/RGDS-Agents/alsoft.conf"
 cd "$SHDIR/RGDS-Agents" || exit 1
 "$SHDIR/RGDS-Agents/bin/love" . "$@" > "$RGDS_LOG" 2>&1
 LAUNCHER
-scp -q "$LAUNCHER_TMP" "$TARGET:$SCRIPT"
+rscp "$LAUNCHER_TMP" "$TARGET:$SCRIPT"
 rm -f "$LAUNCHER_TMP"
-ssh "$TARGET" "chmod +x '$SCRIPT'"
+rssh "$TARGET" "chmod +x '$SCRIPT'"
 
 if [ -f icon.png ]; then
   echo ">> 安装菜单图标"
-  scp -q icon.png "$TARGET:$APPS/Imgs/$NAME.png"
+  rscp icon.png "$TARGET:$APPS/Imgs/$NAME.png"
 fi
 
 echo ">> 校验"
-ssh "$TARGET" "ls -l '$SCRIPT'; echo; ls -lR '$GAME' | head -20; echo; df -h /mnt/mmc | tail -1"
+rssh "$TARGET" "ls -l '$SCRIPT'; echo; ls -lR '$GAME' | head -20; echo; df -h /mnt/mmc | tail -1"
 
 echo ">> 完成。从掌机菜单 APPS 里运行 $NAME.sh"
 echo "   SSH 按菜单流程启动（前端需在菜单界面）: ssh $TARGET '$GAME/run-via-menu.sh'"
