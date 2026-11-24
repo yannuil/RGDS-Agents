@@ -2,8 +2,6 @@
 -- 移植自 rg34xx-lua-app：分辨率 720x480 -> 640x480，按键表换成 RK3568 拓扑，
 -- 新增触摸显示、网络探测，以及 --selftest / --inputlog 两个验证模式。
 -- fixed 版：网络探测改为 love.thread 后台执行不卡帧；自检如实报告音频是否真的拿到播放设备。
--- v2：标题/分数/RUNTIME/LAST INPUT 信息面板移到第二块屏（见 subscreen.lua），主屏只剩游戏；
---     开不了第二个窗口时退回原来的单屏布局。
 --     信息面板加麦克风实时波形与电平（micwave.lua / micthread.lua，经 dsnoop 共享录音）；
 --     按住 R1（键盘 t）录一段语音，录音期间暂停 BGM。松开后把这段已经录好的音频
 --     交给常驻的 sv-helper（stt.lua）做离线识别，信息面板留下文字和语言，
@@ -11,7 +9,6 @@
 --     回复留在信息面板，长回复在这块屏上换行，十字键上下滚动；流式输出时跟着最新一行。
 --     主屏只留开头一两行，大约 5 秒。语音识别保持离线。
 --     助手、密钥或网络挂了，游戏照常跑，信息面板写明原因。
---     gt9xx-0 的触摸在信息屏上。手指按下时在这块屏上画十字，并在日志里写一行。手柄保留。
 
 local W, H = 640, 480
 local windowW, windowH = W, H
@@ -70,7 +67,9 @@ local function color(name, alpha)
 end
 
 local subscreen = require("subscreen")
+local screens = require("screens")
 local hud = {external = false, error = nil}
+local screenPlan
 
 -- 游玩区（草地区域）边界；信息面板在第二块屏时草地占满主屏
 local SHARED_FIELD_TOP = 214
@@ -452,18 +451,53 @@ function installTouchWatch()
 end
 
 function love.load()
+    local oneScreen = false
+    local headless = false
+    for _, value in ipairs(arg or {}) do
+        if value == "--selftest" then selftest = true end
+        if value == "--inputlog" then inputlog = true end
+        if value == "--shot" then shotRequested = true end
+        if value == "--headless" then headless = true end
+        if value == "--one-screen" then
+            oneScreen = true
+            hud.error = "disabled by --one-screen"
+        end
+    end
+
+    if not oneScreen then
+        local ok, planned = pcall(function()
+            return screens.plan(love.window.getDisplayCount())
+        end)
+        if not ok then planned = screens.plan(1) end
+        local skipPlace = headless or not love.window.isVisible()
+        if skipPlace then
+            if planned.menuSdl == nil then screenPlan = planned end
+        elseif planned.loveDisplay == 1 then
+            screenPlan = planned
+        else
+            local modeOk, _, _, flags = pcall(love.window.getMode)
+            flags = modeOk and flags or {}
+            local setOk, moved = pcall(love.window.setMode, W, H, {
+                fullscreen = flags.fullscreen,
+                fullscreentype = flags.fullscreentype,
+                borderless = flags.borderless,
+                resizable = false,
+                vsync = 1,
+                highdpi = false,
+                display = planned.loveDisplay,
+            })
+            local checkOk, _, _, placed = pcall(love.window.getMode)
+            if setOk and moved and checkOk and placed and placed.display == planned.loveDisplay then
+                screenPlan = planned
+            end
+        end
+    end
+
     love.graphics.setDefaultFilter("nearest", "nearest")
     for _, size in ipairs({8, 9, 10, 11, 12, 14, 16, 20, 22, 28}) do
         fonts[size] = love.graphics.newFont(size)
     end
     fonts.cjk = loadCjkFont(16)
-
-    for _, value in ipairs(arg or {}) do
-        if value == "--selftest" then selftest = true end
-        if value == "--inputlog" then inputlog = true end
-        if value == "--shot" then shotRequested = true end
-        if value == "--one-screen" then hud.error = "disabled by --one-screen" end
-    end
 
     love.math.setRandomSeed(os.time())
     initAudio()
@@ -479,17 +513,21 @@ function love.load()
     aid.start()
     windowW, windowH = love.graphics.getWidth(), love.graphics.getHeight()
 
-    if not hud.error and not love.window.isVisible() then hud.error = "main window hidden" end
-    if not hud.error then
-        local ok, err = subscreen.open(W, H)
-        hud.external, hud.error = ok, err
-    end
-    if hud.external then
-        setFieldTop(0)
-        print(string.format("subscreen: info pane on display %d (main window on display %d)",
-            subscreen.display, subscreen.mainDisplay))
+    if screenPlan and not screenPlan.openSecondWindow then
+        print("subscreen: off (SDL display 0 reserved for the OS menu), info pane stays on this window")
     else
-        print("subscreen: off (" .. tostring(hud.error) .. "), info pane stays on the main screen")
+        if not hud.error and not love.window.isVisible() then hud.error = "main window hidden" end
+        if not hud.error then
+            local ok, err = subscreen.open(W, H)
+            hud.external, hud.error = ok, err
+        end
+        if hud.external then
+            setFieldTop(0)
+            print(string.format("subscreen: info pane on display %d (main window on display %d)",
+                subscreen.display, subscreen.mainDisplay))
+        else
+            print("subscreen: off (" .. tostring(hud.error) .. "), info pane stays on the main screen")
+        end
     end
     io.stdout:flush()
 
@@ -501,8 +539,11 @@ function love.load()
         renderer = tostring(renderer) .. " " .. tostring(version),
         gpu = tostring(vendor) .. " / " .. tostring(device),
         input = #joysticks > 0 and ("Pad: " .. tostring(joysticks[1]:getName())) or "Keyboard only",
-        output = hud.external and string.format("%d x %d + info on display %d", windowW, windowH, subscreen.display)
-            or string.format("%d x %d", windowW, windowH),
+        output = (screenPlan and screenPlan.menuSdl ~= nil)
+            and string.format("%d x %d on display %d, OS menu on display %d",
+                windowW, windowH, screenPlan.agentsSdl, screenPlan.menuSdl)
+            or (hud.external and string.format("%d x %d + info on display %d", windowW, windowH, subscreen.display)
+                or string.format("%d x %d", windowW, windowH)),
         lua = _VERSION .. " / LÖVE " .. string.format("%d.%d.%d", major, minor, revision)
     }
 
@@ -1479,7 +1520,8 @@ function drawSelftest()
     add("stt", stt.phase .. (stt.detail ~= "" and (" (" .. stt.detail .. ")") or ""))
     add("aid", aid.phase .. (aid.detail ~= "" and (" (" .. aid.detail .. ")") or ""))
     add("subscreen", hud.external and string.format("info pane on display %d, %d frames", subscreen.display, subscreen.frames)
-        or ("off: " .. tostring(hud.error)))
+        or (screenPlan and screenPlan.menuSdl ~= nil and "off (SDL display 0 reserved for the OS menu)"
+            or ("off: " .. tostring(hud.error))))
     add("mem KB", string.format("%.0f", collectgarbage("count")))
 
     local report = table.concat(lines, "\n") .. "\n"
