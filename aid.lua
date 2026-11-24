@@ -10,7 +10,10 @@ local M = {
     bannerText = nil,
     bannerUntil = -1,
     epoch = 0,
-    log = {},          -- {who="you"|"ai", text, lang, live, err}
+    log = {},
+    activity = nil,
+    setup = nil,
+    setupFile = "/tmp/opencode-setup.json",
 }
 
 local BANNER_S = 5
@@ -30,6 +33,91 @@ end
 
 local function trimLog()
     while #M.log > LOG_MAX do table.remove(M.log, 1) end
+end
+
+local function youRow(text, lang, pc)
+    local row = {who = "you", text = text, lang = lang or ""}
+    if pc then row.pc = true end
+    return row
+end
+
+local function aiRow()
+    return {who = "ai", text = "", lang = "", live = true, err = ""}
+end
+
+function M.toolText(snap)
+    if type(snap) ~= "table" then return nil end
+    local name = snap.tool
+    if type(name) ~= "string" or name == "" then return nil end
+    local title = snap.title
+    if type(title) == "string" and title:gsub("%s", "") ~= "" then
+        return name .. ": " .. title
+    end
+    return name
+end
+
+function M.youTag(turn)
+    if type(turn) ~= "table" then return "YOU" end
+    if turn.pc then return "PC" end
+    if type(turn.lang) == "string" and turn.lang ~= "" then return turn.lang end
+    return "YOU"
+end
+
+local function blank(s)
+    return type(s) ~= "string" or s:gsub("%s", "") == ""
+end
+
+local function beginRemote(msg)
+    if type(msg.id) ~= "string" or msg.id == "" or blank(msg.text) then return end
+    if msg.id == M.reqId then return end
+    closeLive(false)
+    M.reqId = msg.id
+    M.reply, M.detail = "", ""
+    M.phase = "thinking"
+    M.activity = nil
+    bannerHeld = false
+    M.bannerText, M.bannerUntil = nil, -1
+    M.log[#M.log + 1] = youRow(msg.text, "", true)
+    M.log[#M.log + 1] = aiRow()
+    trimLog()
+    M.epoch = M.epoch + 1
+end
+
+local function applyTool(msg)
+    local name = msg.tool
+    if type(name) ~= "string" or name == "" then name = "tool" end
+    local status = msg.status
+    if status ~= "running" and status ~= "completed" and status ~= "error" then return end
+    local title = type(msg.title) == "string" and msg.title or ""
+    local snap = {tool = name, status = status, title = title}
+    local turn = M.log[#M.log]
+    if turn and turn.who == "ai" then turn.tool = snap end
+    if status == "running" then
+        M.activity = snap
+    else
+        M.activity = nil
+    end
+end
+
+local function readSetup(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local text = f:read("*a") or ""
+    f:close()
+    local url = text:match('"url"%s*:%s*"([^"]+)"')
+    local token = text:match('"token"%s*:%s*"([^"]+)"')
+    if type(url) ~= "string" or not url:match("^https?://") then return nil end
+    if type(token) ~= "string" or not token:match("^%w%w%w%w%w%w$") then return nil end
+    return {url = url, token = token}
+end
+
+local function refreshSetup()
+    local path = M.setupFile
+    if type(path) ~= "string" or path == "" then
+        M.setup = nil
+        return
+    end
+    M.setup = readSetup(path)
 end
 local PANE = {
     no_key = "AI: no API key",
@@ -107,10 +195,11 @@ function M.chat(text, lang)
     M.reqId = "c" .. seq
     M.reply, M.detail = "", ""
     M.phase = "thinking"
+    M.activity = nil
     bannerHeld = false
     M.bannerText, M.bannerUntil = nil, -1
-    M.log[#M.log + 1] = {who = "you", text = text, lang = lang or ""}
-    M.log[#M.log + 1] = {who = "ai", text = "", lang = "", live = true, err = ""}
+    M.log[#M.log + 1] = youRow(text, lang)
+    M.log[#M.log + 1] = aiRow()
     trimLog()
     M.epoch = M.epoch + 1
     if prev then jobChannel:push({op = "cancel", id = prev}) end
@@ -122,6 +211,7 @@ function M.dismiss()
     closeLive(true)
     M.reqId = nil
     M.detail = ""
+    M.activity = nil
     local last = M.log[#M.log]
     if last and last.who == "ai" then M.reply = last.text or "" end
     if M.phase == "thinking" or M.phase == "streaming" or M.phase == "error" then
@@ -148,6 +238,7 @@ local function showError(kind)
 end
 
 function M.update()
+    refreshSetup()
     if evChannel then
         local msg = evChannel:pop()
         while msg do
@@ -156,8 +247,13 @@ function M.update()
                 if M.phase == "loading" then M.phase = "ready" end
                 print("aid: ready")
                 io.stdout:flush()
+            elseif msg.ev == "remote_user" then
+                beginRemote(msg)
             elseif mine and msg.ev == "start" then
                 if M.phase ~= "streaming" then M.phase = "thinking" end
+            elseif mine and msg.ev == "tool"
+                and (M.phase == "thinking" or M.phase == "streaming") then
+                applyTool(msg)
             elseif mine and msg.ev == "delta" then
                 M.reply = M.reply .. (msg.text or "")
                 local turn = M.log[#M.log]
@@ -171,6 +267,7 @@ function M.update()
                     end
                 end
             elseif mine and msg.ev == "done" then
+                M.activity = nil
                 local turn = M.log[#M.log]
                 if turn and turn.who == "ai" then
                     turn.live = false
@@ -183,6 +280,7 @@ function M.update()
                     M.bannerUntil = love.timer.getTime() + BANNER_S
                 end
             elseif mine and msg.ev == "error" then
+                M.activity = nil
                 if msg.kind ~= "cancelled" then
                     if msg.partial and msg.partial ~= "" then M.reply = msg.partial end
                     showError(msg.kind)
@@ -236,6 +334,7 @@ function M.stop()
         thread = nil
     end
     M.reqId = nil
+    M.activity = nil
 end
 
 return M
