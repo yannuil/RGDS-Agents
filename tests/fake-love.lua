@@ -1,4 +1,3 @@
--- Minimal fake `love` for running micthread.lua / micwave.lua under plain LuaJIT on the device.
 -- Recording goes through the system OpenAL Soft (the same libopenal LÖVE links), so ALSOFT_CONF →
 -- dsnoop behaves exactly as in the game.
 local ffi = require("ffi")
