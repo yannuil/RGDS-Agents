@@ -1,9 +1,5 @@
 #!/bin/sh
-# 按掌机菜单 (muos2.bin) 选中 APPS 条目时的真实流程启动 RGDS-Agents：
-#   写 /tmp/.next → chmod 777 → cpu_setting.sh deflt → SIGINT 让 muos2.bin 走正常退出 (exit 0)
-#   → dmenu_ln 执行 sh /tmp/.next；app 退出后 loadapp.sh 的循环自动拉起菜单。
-# muos2.bin 退出后才会释放 ALSA 播放设备和手柄 event3，所以 app 才能出声、独占按键。
-# 绝不要 kill -9：muos2.bin 非 0 退出时 dmenu_ln 只会 sleep 30，不会执行 /tmp/.next。
+# ALSA 和 event3 仍由菜单持有。
 #
 # 用法（在掌机上）: run-via-menu.sh [app 参数...]     例: run-via-menu.sh --selftest
 # 从电脑:          ssh rgds /mnt/mmc/Roms/APPS/RGDS-Agents/run-via-menu.sh
@@ -13,16 +9,20 @@ LOVE_BIN="$(cd "$(dirname "$0")" && pwd)/bin/love"
 
 [ -x "$APP_SH" ] || { echo "!! 找不到启动脚本 $APP_SH" >&2; exit 1; }
 
-FRONTEND="$(pidof muos2.bin)"
-if [ -z "$FRONTEND" ]; then
+if [ -z "$(pidof muos2.bin)" ]; then
     echo "!! muos2.bin 没在运行（可能已有其他 app 在前台），请先退出当前 app 回到菜单" >&2
     exit 1
 fi
 
-printf '"%s"  %s\n' "$APP_SH" "$*" > /tmp/.next
-chmod 777 /tmp/.next
-/mnt/vendor/ctrl/cpu_setting.sh deflt
-kill -INT "$FRONTEND"
+love_pid=$(pgrep -f "^$LOVE_BIN" | head -n 1 || true)
+if [ -n "$love_pid" ]; then
+    echo "!! love 已在运行 (PID $love_pid)。要重新启动，先对该进程发 SIGTERM，等 muos2.bin 在运行后再执行本脚本。日志 /tmp/RGDS-Agents.log" >&2
+    exit 1
+fi
+
+trap '' HUP
+"$APP_SH" "$@" >/dev/null 2>&1 &
+trap - HUP
 
 i=0
 while [ $i -lt 20 ]; do
