@@ -27,3 +27,8 @@ stt/sv-helper.new
 # Archives and extracted SDK from setup-stt.sh
 .cache/
 *.tar.bz2
+*.tar.gz
+
+# Downloaded OpenCode binary from setup-opencode.sh
+opencode/bin/opencode
+opencode/bin/opencode.new

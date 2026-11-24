@@ -7,8 +7,6 @@
 # not the static tools archive:
 #   gcc -O2 -mcpu=cortex-a55 sv-helper.c -lsherpa-onnx-c-api -Wl,-rpath,'$ORIGIN/lib'
 # Runtime needs stt/lib/libsherpa-onnx-c-api.so and stt/lib/libonnxruntime.so.
-#
-# Does not read or copy an API key. The MiniMax key stays on the device.
 
 set -eu
 
@@ -123,11 +121,5 @@ mv stt/sv-helper.new stt/sv-helper
 chmod +x stt/sv-helper
 
 echo ">> built $(file stt/sv-helper)"
-echo
-echo "MiniMax key (not part of this repo):"
-echo "  On the device, write /userdata/rgds-ai/config.json and chmod 600."
-echo "  rgds-aid reads that path, or /root/.config/rgds-ai/config.json."
-echo "  Put your own key in api_key. Do not commit the file or minimax.key."
-echo '  {"provider":"minimax","api_key":"PASTE_YOUR_KEY","base_url":"https://api.minimax.cn/v1","model":"MiniMax-M3"}'
 echo
 echo "Next: ./deploy.sh rgds"
