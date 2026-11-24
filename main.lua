@@ -1303,7 +1303,6 @@ function drawSttLine(x, y, w, h, rec, showAi)
     love.graphics.print("hold R1 (or t) to record a clip", x, y + 12)
 end
 
--- 主屏（DSI-1）顶部一两行，约 5 秒后消失。不挡整块草地。
 local function drawSttBanner()
     local text, tag
     if aid.bannerActive() then
