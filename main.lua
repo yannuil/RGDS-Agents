@@ -70,6 +70,7 @@ local subscreen = require("subscreen")
 local screens = require("screens")
 local hud = {external = false, error = nil}
 local screenPlan
+local launchPlan
 
 -- 游玩区（草地区域）边界；信息面板在第二块屏时草地占满主屏
 local SHARED_FIELD_TOP = 214
@@ -464,11 +465,13 @@ function love.load()
         end
     end
 
+    local planned
     if not oneScreen then
-        local ok, planned = pcall(function()
+        local ok, got = pcall(function()
             return screens.plan(love.window.getDisplayCount())
         end)
-        if not ok then planned = screens.plan(1) end
+        if not ok then got = screens.plan(1) end
+        planned = got
         local skipPlace = headless or not love.window.isVisible()
         if skipPlace then
             if planned.menuSdl == nil then screenPlan = planned end
@@ -513,7 +516,8 @@ function love.load()
     aid.start()
     windowW, windowH = love.graphics.getWidth(), love.graphics.getHeight()
 
-    if screenPlan and not screenPlan.openSecondWindow then
+    launchPlan = planned
+    if launchPlan and not launchPlan.openSecondWindow then
         print("subscreen: off (SDL display 0 reserved for the OS menu), info pane stays on this window")
     else
         if not hud.error and not love.window.isVisible() then hud.error = "main window hidden" end
@@ -1519,7 +1523,7 @@ function drawSelftest()
     add("stt", stt.phase .. (stt.detail ~= "" and (" (" .. stt.detail .. ")") or ""))
     add("aid", aid.phase .. (aid.detail ~= "" and (" (" .. aid.detail .. ")") or ""))
     add("subscreen", hud.external and string.format("info pane on display %d, %d frames", subscreen.display, subscreen.frames)
-        or (screenPlan and screenPlan.menuSdl ~= nil and "off (SDL display 0 reserved for the OS menu)"
+        or (launchPlan and launchPlan.menuSdl ~= nil and "off (SDL display 0 reserved for the OS menu)"
             or ("off: " .. tostring(hud.error))))
     add("mem KB", string.format("%.0f", collectgarbage("count")))
 
