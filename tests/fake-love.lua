@@ -1,6 +1,6 @@
 -- Minimal fake `love` for running micthread.lua / micwave.lua under plain LuaJIT on the device.
 -- Recording goes through the system OpenAL Soft (the same libopenal LÖVE links), so ALSOFT_CONF →
--- dsnoop behaves exactly as in the game. Threads are coroutines; love.timer.sleep inside one yields.
+-- dsnoop behaves exactly as in the game.
 local ffi = require("ffi")
 ffi.cdef[[
 typedef struct ALCdevice ALCdevice;
@@ -15,7 +15,11 @@ struct rgds_timespec { long tv_sec; long tv_nsec; };
 int clock_gettime(int clk, struct rgds_timespec *ts);
 int nanosleep(const struct rgds_timespec *req, struct rgds_timespec *rem);
 ]]
-local al = ffi.load("libopenal.so.1")
+local alLib
+local function openal()
+    if not alLib then alLib = ffi.load("libopenal.so.1") end
+    return alLib
+end
 local F = {threads = {}, threadCpu = 0, meshUploads = 0}
 
 function F.now()
@@ -27,7 +31,7 @@ function F.realSleep(s)
     ffi.C.nanosleep(ffi.new("struct rgds_timespec", 0, s * 1e9), nil)
 end
 function F.defaultCaptureDevice()
-    return ffi.string(al.alcGetString(nil, 0x311))
+    return ffi.string(openal().alcGetString(nil, 0x311))
 end
 
 local Data = {}
@@ -59,23 +63,23 @@ local Dev = {}
 Dev.__index = Dev
 function Dev:start(samples, rate, bits, ch)
     if F.forceChannels and ch ~= F.forceChannels then return false end
-    self.d = al.alcCaptureOpenDevice(self.name, rate, ch == 2 and 0x1103 or 0x1101, samples)
+    self.d = openal().alcCaptureOpenDevice(self.name, rate, ch == 2 and 0x1103 or 0x1101, samples)
     if self.d == nil then return false end
-    al.alcCaptureStart(self.d)
+    openal().alcCaptureStart(self.d)
     self.rate, self.ch = rate, ch
     return true
 end
 function Dev:getData()
     local n = ffi.new("int[1]")
-    al.alcGetIntegerv(self.d, 0x312, 1, n)
+    openal().alcGetIntegerv(self.d, 0x312, 1, n)
     if n[0] == 0 then return nil end
     local sd = newSoundData(n[0], self.rate, 16, self.ch)
-    al.alcCaptureSamples(self.d, sd.buf, n[0])
+    openal().alcCaptureSamples(self.d, sd.buf, n[0])
     return sd
 end
 function Dev:isRecording() return self.d ~= nil end
 function Dev:stop()
-    if self.d ~= nil then al.alcCaptureStop(self.d); al.alcCaptureCloseDevice(self.d); self.d = nil end
+    if self.d ~= nil then openal().alcCaptureStop(self.d); openal().alcCaptureCloseDevice(self.d); self.d = nil end
 end
 function Dev:getName() return self.name end
 function Dev:getSampleRate() return self.rate end
