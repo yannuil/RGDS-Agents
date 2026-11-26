@@ -5,10 +5,12 @@ Python stdlib only. OpenCode owns the model config under /userdata/opencode/.
 This process does not read /userdata/rgds-ai/config.json.
 
   RGDS_OPENCODE_URL              default http://127.0.0.1:4096
-  RGDS_OPENCODE_WORKDIR          default /mnt/mmc/Roms/APPS/RGDS-Agents
+  OPENCODE_WORKDIR_FILE          default /userdata/opencode/workdir
   RGDS_OPENCODE_PASSWORD_FILE    default /userdata/opencode/server.password
   OPENCODE_PASSWORD              overrides the password file
   RGDS_AI_PORT                   default 7788
+
+The first line of OPENCODE_WORKDIR_FILE is the session directory. A missing, unreadable, or blank file uses /mnt/mmc/Roms/APPS/RGDS-Agents.
 
 The password is sent only as HTTP Basic user "opencode". It is never written
 to the log or to a protocol message.
@@ -555,10 +557,27 @@ def _close_http(resp, conn):
             pass
 
 
+def _read_workdir():
+    path = os.environ.get("OPENCODE_WORKDIR_FILE") or "/userdata/opencode/workdir"
+    try:
+        with open(path, "rb") as src:
+            line = src.readline()
+    except OSError:
+        return DEFAULT_WORKDIR
+    if line.endswith(b"\n"):
+        line = line[:-1]
+    if line.endswith(b"\r"):
+        line = line[:-1]
+    line = line.strip(b" \t")
+    if not line:
+        return DEFAULT_WORKDIR
+    return os.fsdecode(line)
+
+
 class OpenCodeClient:
     def __init__(self):
         self.base_url = os.environ.get("RGDS_OPENCODE_URL", DEFAULT_URL).rstrip("/")
-        self.workdir = os.environ.get("RGDS_OPENCODE_WORKDIR", DEFAULT_WORKDIR)
+        self.workdir = _read_workdir()
         self.on_event = None
         self.on_disconnect = None
         self._secret = ""

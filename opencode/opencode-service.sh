@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 OPENCODE_BIN="${OPENCODE_BIN:-$SCRIPT_DIR/bin/opencode}"
 OPENCODE_DATA_ROOT="${OPENCODE_DATA_ROOT:-/userdata/opencode}"
-OPENCODE_WORKDIR="${OPENCODE_WORKDIR:-/mnt/mmc/Roms/APPS/RGDS-Agents}"
 OPENCODE_HOST="${OPENCODE_HOST:-127.0.0.1}"
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 OPENCODE_PID_FILE="${OPENCODE_PID_FILE:-/tmp/opencode-serve.pid}"
@@ -265,6 +264,40 @@ status_service() {
   echo "running (pid: $pid, health: unhealthy)"
   return 1
 }
+
+read_opencode_workdir() {
+  local _file _line _cr _tab
+  _file=${OPENCODE_WORKDIR_FILE:-/userdata/opencode/workdir}
+  _line=
+  IFS= read -r _line 2>/dev/null < "$_file" || true
+  _cr=$(printf '\r')
+  case "$_line" in
+    *"$_cr") _line=${_line%"$_cr"} ;;
+  esac
+  _tab=$(printf '\t')
+  while :; do
+    case "$_line" in
+      " "*) _line=${_line# } ;;
+      "$_tab"*) _line=${_line#"$_tab"} ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case "$_line" in
+      *" ") _line=${_line% } ;;
+      *"$_tab") _line=${_line%"$_tab"} ;;
+      *) break ;;
+    esac
+  done
+  unset OPENCODE_WORKDIR
+  if [ -n "$_line" ]; then
+    OPENCODE_WORKDIR="$_line"
+  else
+    OPENCODE_WORKDIR=/mnt/mmc/Roms/APPS/RGDS-Agents
+  fi
+}
+
+read_opencode_workdir
 
 case "${1:-}" in
   start)

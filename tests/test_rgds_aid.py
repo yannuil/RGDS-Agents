@@ -24,6 +24,8 @@ _SPEC.loader.exec_module(AID)
 _ENV_KEYS = (
     "RGDS_OPENCODE_URL",
     "RGDS_OPENCODE_WORKDIR",
+    "OPENCODE_WORKDIR",
+    "OPENCODE_WORKDIR_FILE",
     "RGDS_OPENCODE_PASSWORD_FILE",
     "OPENCODE_PASSWORD",
     "RGDS_AI_CONFIG",
@@ -587,13 +589,17 @@ class WireTest(unittest.TestCase):
     def setUp(self):
         self.password = "pw-do-not-leak"
         self._env = {key: os.environ.get(key) for key in _ENV_KEYS}
+        self._tmp = tempfile.TemporaryDirectory()
+        self._workdir_file = os.path.join(self._tmp.name, "workdir-file")
         self.mock = MockOpenCode(self.password, sessions=[
             {"id": "ses_new"},
             {"id": "ses_old"},
         ])
         self.mock.start()
         os.environ["RGDS_OPENCODE_URL"] = self.mock.url
-        os.environ["RGDS_OPENCODE_WORKDIR"] = _WORKDIR
+        os.environ.pop("RGDS_OPENCODE_WORKDIR", None)
+        os.environ.pop("OPENCODE_WORKDIR", None)
+        os.environ["OPENCODE_WORKDIR_FILE"] = self._workdir_file
         os.environ["OPENCODE_PASSWORD"] = self.password
         os.environ.pop("RGDS_OPENCODE_PASSWORD_FILE", None)
         os.environ.pop("RGDS_AI_CONFIG", None)
@@ -617,6 +623,7 @@ class WireTest(unittest.TestCase):
                 os.remove(path)
             except OSError:
                 pass
+        self._tmp.cleanup()
         for key, value in self._env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -1123,6 +1130,8 @@ class WireTest(unittest.TestCase):
             client.send({"op": "chat", "id": "r1", "text": "hi"})
             self.assertTrue(self.mock.list_ready.wait(2))
             client.send({"op": "cancel", "id": "r1"})
+            client.send({"op": "status"})
+            self.assertEqual(client.recv(timeout=2)["ev"], "status")
             self.mock.list_gate.set()
             err = client.recv(timeout=2)
         finally:
@@ -1239,6 +1248,51 @@ class WireTest(unittest.TestCase):
         self.assertEqual(remote["ev"], "remote_user")
         self.assertEqual(remote["text"], "from the desk")
         self.assertEqual(client.recv()["ev"], "start")
+
+    def _expect_directory(self, directory):
+        with self.mock.lock:
+            self.mock.sessions.clear()
+            self.mock.calls.clear()
+        client = self.connect()
+        client.send({"op": "chat", "id": "r1", "text": "hi"})
+        self.assertEqual(client.recv()["ev"], "start")
+        created = self.mock.wait_calls(
+            lambda call: call["method"] == "POST" and call["path"] == "/api/session")
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["body"], {"location": {"directory": directory}})
+        listed = self.mock.wait_calls(
+            lambda call: call["method"] == "GET" and call["path"] == "/api/session")
+        self.assertGreaterEqual(len(listed), 1)
+        for call in listed:
+            self.assertEqual(call["query"].get("directory"), [directory])
+
+    def test_workdir_file_strips_surrounding_spaces(self):
+        directory = os.path.join(self._tmp.name, "project")
+        os.mkdir(directory)
+        with open(self._workdir_file, "wb") as fh:
+            fh.write(b"  " + directory.encode("utf-8") + b"  \r\n")
+        self._expect_directory(directory)
+
+    def test_workdir_file_wins_over_environment(self):
+        directory = os.path.join(self._tmp.name, "project")
+        other = os.path.join(self._tmp.name, "other")
+        os.mkdir(directory)
+        os.mkdir(other)
+        with open(self._workdir_file, "wb") as fh:
+            fh.write(directory.encode("utf-8") + b"\n")
+        os.environ["OPENCODE_WORKDIR"] = other
+        os.environ["RGDS_OPENCODE_WORKDIR"] = other
+        self._expect_directory(directory)
+
+    def test_empty_workdir_file_uses_the_default_directory(self):
+        with open(self._workdir_file, "wb") as fh:
+            fh.write(b"")
+        self._expect_directory(_WORKDIR)
+
+    def test_whitespace_workdir_file_uses_the_default_directory(self):
+        with open(self._workdir_file, "wb") as fh:
+            fh.write(b" \t \n")
+        self._expect_directory(_WORKDIR)
 
 
 if __name__ == "__main__":

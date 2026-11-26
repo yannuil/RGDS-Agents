@@ -804,6 +804,8 @@ class ServiceScriptTest(unittest.TestCase):
         self.data_root = self.root / "data"
         self.workdir = self.root / "workdir"
         self.workdir.mkdir()
+        self.workdir_file = self.root / "workdir-file"
+        self.workdir_file.write_bytes(str(self.workdir).encode("utf-8") + b"\n")
         self.pid_file = self.root / "opencode.pid"
         self.log_file = self.root / "opencode.log"
 
@@ -857,11 +859,13 @@ except SystemExit:
         os.chmod(self.fake_bin, 0o755)
 
         self.env = os.environ.copy()
+        self.env.pop("OPENCODE_WORKDIR", None)
+        self.env.pop("RGDS_OPENCODE_WORKDIR", None)
         self.env.update(
             {
                 "OPENCODE_BIN": str(self.fake_bin),
                 "OPENCODE_DATA_ROOT": str(self.data_root),
-                "OPENCODE_WORKDIR": str(self.workdir),
+                "OPENCODE_WORKDIR_FILE": str(self.workdir_file),
                 "OPENCODE_HOST": "127.0.0.1",
                 "OPENCODE_PORT": str(self.port),
                 "OPENCODE_PID_FILE": str(self.pid_file),
@@ -996,6 +1000,50 @@ except SystemExit:
         self.assertEqual(start.returncode, 0, msg=start.stderr + start.stdout)
         self.assertFalse(lock.exists())
         self.assertTrue(self.pid_file.is_file())
+
+    def _serve_cwd(self) -> str:
+        pid = self.pid_file.read_text(encoding="utf-8").strip()
+        return os.readlink("/proc/%s/cwd" % pid)
+
+    def test_workdir_file_strips_surrounding_spaces(self) -> None:
+        self.workdir_file.write_bytes(b"  " + str(self.workdir).encode("utf-8") + b"  \r\n")
+        start = self._run_service("start")
+        self.assertEqual(start.returncode, 0, msg=start.stderr)
+        self.assertEqual(self._serve_cwd(), str(self.workdir))
+
+    def test_workdir_file_wins_over_environment(self) -> None:
+        other = self.root / "other-workdir"
+        other.mkdir()
+        env = dict(self.env)
+        env["OPENCODE_WORKDIR"] = str(other)
+        env["RGDS_OPENCODE_WORKDIR"] = str(other)
+        start = subprocess.run(
+            [str(SERVICE_SCRIPT), "start"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(start.returncode, 0, msg=start.stderr)
+        self.assertEqual(self._serve_cwd(), str(self.workdir))
+
+    def test_missing_or_blank_workdir_file_uses_default_directory(self) -> None:
+        default = "/mnt/mmc/Roms/APPS/RGDS-Agents"
+        samples = (
+            ("missing", None),
+            ("empty", b""),
+            ("whitespace", b" \t \n"),
+        )
+        for name, payload in samples:
+            if payload is None:
+                self.workdir_file.unlink(missing_ok=True)
+            else:
+                self.workdir_file.write_bytes(payload)
+            start = self._run_service("start")
+            self.assertNotEqual(start.returncode, 0, msg=name)
+            self.assertIn(default, start.stderr, msg="%s stderr=%r" % (name, start.stderr))
+            self.assertFalse(self.pid_file.exists(), msg=name)
 
 
 if __name__ == "__main__":
